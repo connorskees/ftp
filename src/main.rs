@@ -1,187 +1,246 @@
 use std::{
-    io::{self, BufRead, BufReader, Read, Write},
+    collections::BTreeMap,
+    fs,
+    io::{self, BufRead, BufReader, BufWriter, Read, Write},
     net::{TcpListener, TcpStream},
+    path::PathBuf,
 };
 
-/// Data representations are handled in FTP by a user specifying a
-/// representation type.  This type may implicitly (as in ASCII or
-/// EBCDIC) or explicitly (as in Local byte) define a byte size for
-/// interpretation which is referred to as the "logical byte size."
-/// Note that this has nothing to do with the byte size used for
-/// transmission over the data connection, called the "transfer
-/// byte size", and the two should not be confused.  For example,
-/// NVT-ASCII has a logical byte size of 8 bits.  If the type is
-/// Local byte, then the TYPE command has an obligatory second
-/// parameter specifying the logical byte size.  The transfer byte
-/// size is always 8 bits.
-pub enum DataType {
-    /// This is the default type and must be accepted by all FTP
-    /// implementations.  It is intended primarily for the transfer
-    /// of text files, except when both hosts would find the EBCDIC
-    /// type more convenient.
-    ///
-    /// The sender converts the data from an internal character
-    /// representation to the standard 8-bit NVT-ASCII
-    /// representation (see the Telnet specification).  The receiver
-    /// will convert the data from the standard form to his own
-    /// internal form.
-    ///
-    /// In accordance with the NVT standard, the <CRLF> sequence
-    /// should be used where necessary to denote the end of a line
-    /// of text.  (See the discussion of file structure at the end
-    /// of the Section on Data Representation and Storage.)
-    ///
-    /// Using the standard NVT-ASCII representation means that data
-    /// must be interpreted as 8-bit bytes.
-    Ascii,
+use crate::response::Code;
 
-    /// This type is intended for efficient transfer between hosts
-    /// which use EBCDIC for their internal character
-    /// representation.
-    ///
-    /// For transmission, the data are represented as 8-bit EBCDIC
-    /// characters.  The character code is the only difference
-    /// between the functional specifications of EBCDIC and ASCII
-    /// types.
-    ///
-    /// End-of-line (as opposed to end-of-record--see the discussion
-    /// of structure) will probably be rarely used with EBCDIC type
-    /// for purposes of denoting structure, but where it is
-    /// necessary the <NL> character should be used.
-    Ebcdic,
+mod command;
+mod data;
+mod response;
 
-    /// The data are sent as contiguous bits which, for transfer,
-    /// are packed into the 8-bit transfer bytes.  The receiving
-    /// site must store the data as contiguous bits.  The structure
-    /// of the storage system might necessitate the padding of the
-    /// file (or of each record, for a record-structured file) to
-    /// some convenient boundary (byte, word or block).  This
-    /// padding, which must be all zeros, may occur only at the end
-    /// of the file (or at the end of each record) and there must be
-    /// a way of identifying the padding bits so that they may be
-    /// stripped off if the file is retrieved.  The padding
-    /// transformation should be well publicized to enable a user to
-    /// process a file at the storage site.
-    ///
-    /// Image type is intended for the efficient storage and
-    /// retrieval of files and for the transfer of binary data.  It
-    /// is recommended that this type be accepted by all FTP
-    /// implementations.
-    Image,
-
-    /// The data is transferred in logical bytes of the size
-    /// specified by the obligatory second parameter, Byte size.
-    /// The value of Byte size must be a decimal integer; there is
-    /// no default value.  The logical byte size is not necessarily
-    /// the same as the transfer byte size.  If there is a
-    /// difference in byte sizes, then the logical bytes should be
-    /// packed contiguously, disregarding transfer byte boundaries
-    /// and with any necessary padding at the end.
-    ///
-    /// When the data reaches the receiving host, it will be
-    /// transformed in a manner dependent on the logical byte size
-    /// and the particular host.  This transformation must be
-    /// invertible (i.e., an identical file can be retrieved if the
-    /// same parameters are used) and should be well publicized by
-    /// the FTP implementors.
-    ///
-    /// For example, a user sending 36-bit floating-point numbers to
-    /// a host with a 32-bit word could send that data as Local byte
-    /// with a logical byte size of 36.  The receiving host would
-    /// then be expected to store the logical bytes so that they
-    /// could be easily manipulated; in this example putting the
-    /// 36-bit logical bytes into 64-bit double words should
-    /// suffice.
-    ///
-    /// In another example, a pair of hosts with a 36-bit word size
-    /// may send data to one another in words by using TYPE L 36.
-    /// The data would be sent in the 8-bit transmission bytes
-    /// packed so that 9 transmission bytes carried two host words.
-    LocalType,
-
-    /// The types ASCII and EBCDIC also take a second (optional)
-    /// parameter; this is to indicate what kind of vertical format
-    /// control, if any, is associated with a file.  The following
-    /// data representation types are defined in FTP:
-    ///
-    /// A character file may be transferred to a host for one of
-    /// three purposes: for printing, for storage and later
-    /// retrieval, or for processing.  If a file is sent for
-    /// printing, the receiving host must know how the vertical
-    /// format control is represented.  In the second case, it must
-    /// be possible to store a file at a host and then retrieve it
-    /// later in exactly the same form.  Finally, it should be
-    /// possible to move a file from one host to another and process
-    /// the file at the second host without undue trouble.  A single
-    /// ASCII or EBCDIC format does not satisfy all these
-    /// conditions.  Therefore, these types have a second parameter
-    /// specifying one of the following three formats:
-    FormatControl,
+struct Options {
+    users: BTreeMap<String, String>,
 }
 
-pub enum DataStructure {
-    /// File structure is the default to be assumed if the STRUcture
-    /// command has not been used.
-    ///
-    /// In file-structure there is no internal structure and the
-    /// file is considered to be a continuous sequence of data
-    File(Vec<u8>),
-
-    // Record structures must be accepted for "text" files (i.e.,
-    // files with TYPE ASCII or EBCDIC) by all FTP implementations.
-    //
-    // In record-structure the file is made up of sequential
-    // records.
-    Record,
-
-    /// To transmit files that are discontinuous, FTP defines a page
-    /// structure.  Files of this type are sometimes known as
-    /// "random access files" or even as "holey files".  In these
-    /// files there is sometimes other information associated with
-    /// the file as a whole (e.g., a file descriptor), or with a
-    /// section of the file (e.g., page access controls), or both.
-    /// In FTP, the sections of the file are called pages.
-    Page {
-        /// The number of logical bytes in the page header
-        /// including this byte.  The minimum header length is 4.
-        header_length: usize,
-
-        /// The logical page number of this section of the file.
-        /// This is not the transmission sequence number of this
-        /// page, but the index used to identify this page of the
-        /// file.
-        page_index: usize,
-
-        /// The number of logical bytes in the page data.  The
-        /// minimum data length is 0.
-        data_length: usize,
-    },
+pub struct Server {
+    reader: BufReader<TcpStream>,
+    writer: BufWriter<TcpStream>,
+    path: PathBuf,
+    data_port: Option<String>,
 }
 
-#[repr(u8)]
-pub enum PageType {
-    /// This is used to indicate the end of a paged
-    /// structured transmission.  The header length must
-    /// be 4, and the data length must be 0.
-    Last = 0,
+impl Server {
+    pub async fn new(stream: TcpStream, path: PathBuf) -> io::Result<Self> {
+        let mut server = Self {
+            reader: BufReader::new(stream.try_clone()?),
+            writer: BufWriter::new(stream),
+            path,
+            data_port: None,
+        };
 
-    /// This is the normal type for simple paged files
-    /// with no page level associated control
-    /// information.  The header length must be 4.
-    Simple = 1,
+        server
+            .write_response(Code::ServiceReadyForNewUser, "Server ready for new user")
+            .await?;
 
-    /// This type is used to transmit the descriptive
-    /// information for the file as a whole.
-    Descriptor = 2,
+        server.write_response(Code::Ok, "Ok").await?;
 
-    /// This type includes an additional header field
-    /// for paged files with page level access control
-    /// information.  The header length must be 5.
-    AccessControlled = 3,
+        server.read_opts().await?;
+
+        Ok(server)
+    }
+
+    pub async fn write_response(&mut self, code: Code, message: &str) -> io::Result<()> {
+        if message.contains('\n') {
+            write!(self.writer, "{}-", code)?;
+
+            let mut lines = message.split('\n').peekable();
+
+            while let Some(line) = lines.next() {
+                if lines.peek().is_some() {
+                    if line.starts_with(|c: char| c.is_ascii_digit()) {
+                        self.writer.write(b"  ")?;
+                    }
+                    write!(self.writer, "{}\r\n", line)?;
+                } else {
+                    write!(self.writer, "{} {}\r\n", code, line)?;
+                }
+            }
+        } else {
+            write!(self.writer, "{} {}\r\n", code, message)?;
+        }
+        self.writer.flush()?;
+        Ok(())
+    }
+
+    pub async fn read_opts(&mut self) -> io::Result<()> {
+        if !self.expect_command(b"OPTS ").await? {
+            return Ok(());
+        }
+
+        let opts = self.read_arg().await?;
+
+        println!("Found opts: {:?}", opts);
+
+        Ok(())
+    }
+
+    async fn read_arg(&mut self) -> io::Result<String> {
+        let mut buffer = String::new();
+        self.reader.read_line(&mut buffer)?;
+        let mut s = buffer.trim_end_matches("\r\n");
+        if let Some(stripped) = s.strip_prefix(' ') {
+            s = stripped;
+        }
+        Ok(s.to_owned())
+    }
+
+    /// Returns true if command was found
+    async fn expect_command(&mut self, command: &[u8]) -> io::Result<bool> {
+        let mut command_buf = vec![0; command.len()];
+
+        let len = self.reader.read(&mut command_buf)?;
+
+        if len > 0 && command_buf != command {
+            self.write_response(Code::BadSequenceOfCommands, "Bad sequence of commands.")
+                .await?;
+            println!("Found {:?}.", command);
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    pub async fn login(&mut self) -> io::Result<()> {
+        self.write_response(Code::NeedAccountForLogin, "Enter username.")
+            .await?;
+
+        if !self.expect_command(b"USER ").await? {
+            return Ok(());
+        }
+
+        let username = self.read_arg().await?;
+
+        if username.is_empty() {
+            self.write_response(
+                Code::InvalidParametersOrArguments,
+                "Username may not be empty.",
+            )
+            .await?;
+            return Ok(());
+        }
+
+        println!("Found username: {:?}", username);
+
+        self.write_response(
+            Code::UserNameOkPasswordNeeded,
+            "Username Ok. Password needed.",
+        )
+        .await?;
+
+        if !self.expect_command(b"PASS ").await? {
+            return Ok(());
+        }
+
+        let password = self.read_arg().await?;
+
+        println!("Found password: {:?}", password);
+
+        self.write_response(Code::UserLoggedIn, "Logged in.")
+            .await?;
+
+        Ok(())
+    }
+
+    async fn read_cmd(&mut self) -> io::Result<bool> {
+        let mut command = vec![0; 4];
+
+        self.reader.read_exact(&mut command)?;
+
+        let command = match String::from_utf8(command) {
+            Ok(mut cmd) => {
+                cmd.make_ascii_uppercase();
+                cmd
+            }
+            Err(..) => {
+                self.write_response(Code::CommandNotImplemented, "Command was not valid UTF-8.")
+                    .await?;
+                return Ok(true);
+            }
+        };
+
+        let arg = self.read_arg().await?;
+
+        match command.as_str() {
+            "USER" => todo!(),
+            "PASS" => todo!(),
+            "ACCT" => todo!(),
+            "XCWD" | "CWD " => {
+                let path = self.path.join(arg);
+                if !path.is_dir() {
+                    self.write_response(
+                        Code::InvalidParametersOrArguments,
+                        "Path is not a directory.",
+                    )
+                    .await?;
+                    return Ok(true);
+                }
+                self.path = path;
+                self.write_response(Code::Ok, "Changed directory.").await?
+            }
+            "CDUP" => todo!(),
+            "SMNT" => todo!(),
+            "QUIT" => {
+                self.write_response(Code::ServiceClosing, "Goodbye!")
+                    .await?;
+                return Ok(false);
+            }
+            "REIN" => todo!(),
+            "PORT" => {
+                self.data_port = Some(arg);
+                self.write_response(Code::Ok, "Changed port.").await?;
+            }
+            "PASV" => todo!(),
+            "TYPE" => todo!(),
+            "STRU" => todo!(),
+            "MODE" => todo!(),
+            "RETR" => todo!(),
+            "STOR" => todo!(),
+            "STOU" => todo!(),
+            "APPE" => todo!(),
+            "ALLO" => todo!(),
+            "REST" => todo!(),
+            "RNFR" => todo!(),
+            "RNTO" => todo!(),
+            "ABOR" => todo!(),
+            "DELE" => todo!(),
+            "XRMD" => todo!(),
+            "XMKD" => todo!(),
+            "XPWD" => {
+                let path: String = self.path.to_string_lossy().into();
+                self.write_response(Code::Ok, &path).await?
+            }
+            "LIST" => todo!(),
+            "NLST" => {
+                let path = self.path.join(arg);
+                let dirs = fs::read_dir(path)?
+                    .map(|entry| Ok(format!("{:?}", entry?.file_name())))
+                    .collect::<io::Result<Vec<String>>>()?
+                    .join("\n");
+                self.write_response(Code::Ok, &dirs).await?;
+            }
+            "SITE" => todo!(),
+            "SYST" => todo!(),
+            "STAT" => todo!(),
+            "HELP" => todo!(),
+            "NOOP" => todo!(),
+            cmd => todo!("command not recognized: {:?}", cmd),
+        }
+
+        Ok(true)
+    }
+
+    pub async fn command_loop(&mut self) -> io::Result<()> {
+        loop {
+            if !self.read_cmd().await? {
+                break;
+            }
+        }
+        Ok(())
+    }
 }
-
-/// Number of bits long a byte is (for now we assume every byte is 8 bits)
-pub struct LogicalByteLength(u8);
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -196,33 +255,12 @@ async fn main() -> io::Result<()> {
     Ok(())
 }
 
-async fn connect() -> io::Result<()> {
-    let mut stream = TcpStream::connect("198.38.77.42:21")?;
+async fn handle_connection(stream: TcpStream) -> io::Result<()> {
+    let mut server = Server::new(stream, PathBuf::from("/")).await?;
 
-    let mut buffer = String::new();
+    server.login().await?;
 
-    stream.read_to_string(&mut buffer)?;
+    server.command_loop().await?;
 
-    println!("{}", buffer);
-
-    Ok(())
-}
-
-async fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
-    // let mut buffer = String::new();
-    let mut buffer = vec![0; 5];
-
-    // stream.write(b"HIIIIII")?;
-    dbg!(stream.read(&mut buffer)?);
-
-    stream.write(b"hiiii")?;
-    // stream.read_to_string(&mut buffer)?; //.read(&mut buffer).unwrap();
-    // dbg!(stream.read_line(&mut buffer)?); //.read(&mut buffer).unwrap();
-
-    // stream.write(b"hi")?;
-
-    // stream.flush()?;
-
-    println!("Request: {:?}", buffer);
     Ok(())
 }
