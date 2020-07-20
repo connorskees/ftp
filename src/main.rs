@@ -2,8 +2,10 @@ use std::{
     collections::BTreeMap,
     fs,
     io::{self, BufRead, BufReader, BufWriter, Read, Write},
-    net::{TcpListener, TcpStream},
+    net::{Ipv4Addr, TcpListener, TcpStream},
     path::PathBuf,
+    str::FromStr,
+    thread,
 };
 
 use crate::response::Code;
@@ -16,34 +18,32 @@ struct Options {
     users: BTreeMap<String, String>,
 }
 
-pub struct Server {
+pub struct Connection {
     reader: BufReader<TcpStream>,
     writer: BufWriter<TcpStream>,
     path: PathBuf,
-    data_port: Option<String>,
+    data_port: Option<u16>,
 }
 
-impl Server {
-    pub async fn new(stream: TcpStream, path: PathBuf) -> io::Result<Self> {
-        let mut server = Self {
+impl Connection {
+    pub fn new(stream: TcpStream, path: PathBuf) -> io::Result<Self> {
+        let mut connection = Self {
             reader: BufReader::new(stream.try_clone()?),
             writer: BufWriter::new(stream),
             path,
             data_port: None,
         };
 
-        server
-            .write_response(Code::ServiceReadyForNewUser, "Server ready for new user")
-            .await?;
+        connection.write_response(Code::ServiceReadyForNewUser, "Server ready for new user")?;
 
-        server.write_response(Code::Ok, "Ok").await?;
+        connection.write_response(Code::Ok, "Ok")?;
 
-        server.read_opts().await?;
+        connection.read_opts()?;
 
-        Ok(server)
+        Ok(connection)
     }
 
-    pub async fn write_response(&mut self, code: Code, message: &str) -> io::Result<()> {
+    pub fn write_response(&mut self, code: Code, message: &str) -> io::Result<()> {
         if message.contains('\n') {
             write!(self.writer, "{}-", code)?;
 
@@ -66,19 +66,19 @@ impl Server {
         Ok(())
     }
 
-    pub async fn read_opts(&mut self) -> io::Result<()> {
-        if !self.expect_command(b"OPTS ").await? {
+    pub fn read_opts(&mut self) -> io::Result<()> {
+        if !self.expect_command(b"OPTS ")? {
             return Ok(());
         }
 
-        let opts = self.read_arg().await?;
+        let opts = self.read_arg()?;
 
         println!("Found opts: {:?}", opts);
 
         Ok(())
     }
 
-    async fn read_arg(&mut self) -> io::Result<String> {
+    fn read_arg(&mut self) -> io::Result<String> {
         let mut buffer = String::new();
         self.reader.read_line(&mut buffer)?;
         let mut s = buffer.trim_end_matches("\r\n");
@@ -89,36 +89,33 @@ impl Server {
     }
 
     /// Returns true if command was found
-    async fn expect_command(&mut self, command: &[u8]) -> io::Result<bool> {
+    fn expect_command(&mut self, command: &[u8]) -> io::Result<bool> {
         let mut command_buf = vec![0; command.len()];
 
         let len = self.reader.read(&mut command_buf)?;
 
         if len > 0 && command_buf != command {
-            self.write_response(Code::BadSequenceOfCommands, "Bad sequence of commands.")
-                .await?;
+            self.write_response(Code::BadSequenceOfCommands, "Bad sequence of commands.")?;
             println!("Found {:?}.", command);
             return Ok(false);
         }
         Ok(true)
     }
 
-    pub async fn login(&mut self) -> io::Result<()> {
-        self.write_response(Code::NeedAccountForLogin, "Enter username.")
-            .await?;
+    pub fn login(&mut self) -> io::Result<()> {
+        self.write_response(Code::NeedAccountForLogin, "Enter username.")?;
 
-        if !self.expect_command(b"USER ").await? {
+        if !self.expect_command(b"USER ")? {
             return Ok(());
         }
 
-        let username = self.read_arg().await?;
+        let username = self.read_arg()?;
 
         if username.is_empty() {
             self.write_response(
                 Code::InvalidParametersOrArguments,
                 "Username may not be empty.",
-            )
-            .await?;
+            )?;
             return Ok(());
         }
 
@@ -127,24 +124,22 @@ impl Server {
         self.write_response(
             Code::UserNameOkPasswordNeeded,
             "Username Ok. Password needed.",
-        )
-        .await?;
+        )?;
 
-        if !self.expect_command(b"PASS ").await? {
+        if !self.expect_command(b"PASS ")? {
             return Ok(());
         }
 
-        let password = self.read_arg().await?;
+        let password = self.read_arg()?;
 
         println!("Found password: {:?}", password);
 
-        self.write_response(Code::UserLoggedIn, "Logged in.")
-            .await?;
+        self.write_response(Code::UserLoggedIn, "Logged in.")?;
 
         Ok(())
     }
 
-    async fn read_cmd(&mut self) -> io::Result<bool> {
+    fn read_cmd(&mut self) -> io::Result<bool> {
         let mut command = vec![0; 4];
 
         self.reader.read_exact(&mut command)?;
@@ -155,13 +150,15 @@ impl Server {
                 cmd
             }
             Err(..) => {
-                self.write_response(Code::CommandNotImplemented, "Command was not valid UTF-8.")
-                    .await?;
+                self.write_response(Code::CommandNotImplemented, "Command was not valid UTF-8.")?;
                 return Ok(true);
             }
         };
 
-        let arg = self.read_arg().await?;
+        let arg = self.read_arg()?;
+
+        println!("Command: {:?}", command);
+        println!("Arg: {:?}", arg);
 
         match command.as_str() {
             "USER" => todo!(),
@@ -173,24 +170,35 @@ impl Server {
                     self.write_response(
                         Code::InvalidParametersOrArguments,
                         "Path is not a directory.",
-                    )
-                    .await?;
+                    )?;
                     return Ok(true);
                 }
                 self.path = path;
-                self.write_response(Code::Ok, "Changed directory.").await?
+                self.write_response(Code::Ok, "Changed directory.")?
             }
             "CDUP" => todo!(),
             "SMNT" => todo!(),
             "QUIT" => {
-                self.write_response(Code::ServiceClosing, "Goodbye!")
-                    .await?;
+                self.write_response(Code::ServiceClosing, "Goodbye!")?;
                 return Ok(false);
             }
             "REIN" => todo!(),
             "PORT" => {
-                self.data_port = Some(arg);
-                self.write_response(Code::Ok, "Changed port.").await?;
+                let mut vals: Vec<&str> = arg.split(',').collect();
+                let port = vals.pop().unwrap().parse::<u16>().unwrap()
+                    + (vals.pop().unwrap().parse::<u16>().unwrap() << 8);
+                self.data_port = Some(port);
+                let _ip = match Ipv4Addr::from_str(&vals.join(".")) {
+                    Ok(addr) => addr,
+                    Err(..) => {
+                        self.write_response(
+                            Code::InvalidParametersOrArguments,
+                            "IP not in valid format.",
+                        )?;
+                        return Ok(true);
+                    }
+                };
+                self.write_response(Code::Ok, "Changed port.")?;
             }
             "PASV" => todo!(),
             "TYPE" => todo!(),
@@ -208,33 +216,42 @@ impl Server {
             "DELE" => todo!(),
             "XRMD" => todo!(),
             "XMKD" => todo!(),
-            "XPWD" => {
+            "XPWD" | "PWD\r" | "PWD " => {
                 let path: String = self.path.to_string_lossy().into();
-                self.write_response(Code::Ok, &path).await?
+                self.write_response(Code::Ok, &path)?
             }
             "LIST" => todo!(),
             "NLST" => {
                 let path = self.path.join(arg);
                 let dirs = fs::read_dir(path)?
-                    .map(|entry| Ok(format!("{:?}", entry?.file_name())))
+                    .map(|entry| {
+                        Ok(entry?
+                            .file_name()
+                            .to_str()
+                            .unwrap_or("Invalid UTF-8.")
+                            .to_owned())
+                    })
                     .collect::<io::Result<Vec<String>>>()?
                     .join("\n");
-                self.write_response(Code::Ok, &dirs).await?;
+                self.write_response(Code::Ok, &dirs)?;
             }
             "SITE" => todo!(),
             "SYST" => todo!(),
             "STAT" => todo!(),
             "HELP" => todo!(),
             "NOOP" => todo!(),
-            cmd => todo!("command not recognized: {:?}", cmd),
+            cmd => {
+                println!("Command not recognized: {:?}", cmd);
+                self.write_response(Code::CommandUnrecognized, "Command not recognized.")?;
+            }
         }
 
         Ok(true)
     }
 
-    pub async fn command_loop(&mut self) -> io::Result<()> {
+    pub fn command_loop(&mut self) -> io::Result<()> {
         loop {
-            if !self.read_cmd().await? {
+            if !self.read_cmd()? {
                 break;
             }
         }
@@ -242,25 +259,24 @@ impl Server {
     }
 }
 
-#[tokio::main]
-async fn main() -> io::Result<()> {
+fn main() -> io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:21").unwrap();
 
     for stream in listener.incoming() {
         let stream = stream?;
 
-        handle_connection(stream).await?;
+        thread::spawn(|| handle_connection(stream));
     }
 
     Ok(())
 }
 
-async fn handle_connection(stream: TcpStream) -> io::Result<()> {
-    let mut server = Server::new(stream, PathBuf::from("/")).await?;
+fn handle_connection(stream: TcpStream) -> io::Result<()> {
+    let mut connection = Connection::new(stream, PathBuf::from("/"))?;
 
-    server.login().await?;
+    connection.login()?;
 
-    server.command_loop().await?;
+    connection.command_loop()?;
 
     Ok(())
 }
