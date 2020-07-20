@@ -14,8 +14,17 @@ mod command;
 mod data;
 mod response;
 
-struct Options {
+pub struct Config {
     users: BTreeMap<String, String>,
+}
+
+impl Config {
+    pub fn new() -> Self {
+        let mut users = BTreeMap::new();
+        users.insert("a".to_owned(), "a".to_owned());
+        users.insert("b".to_owned(), "b".to_owned());
+        Self { users }
+    }
 }
 
 pub struct Connection {
@@ -23,6 +32,8 @@ pub struct Connection {
     writer: BufWriter<TcpStream>,
     path: PathBuf,
     data_port: Option<u16>,
+    username: Option<String>,
+    config: Config,
 }
 
 impl Connection {
@@ -32,13 +43,13 @@ impl Connection {
             writer: BufWriter::new(stream),
             path,
             data_port: None,
+            username: None,
+            config: Config::new(),
         };
 
         connection.write_response(Code::ServiceReadyForNewUser, "Server ready for new user")?;
 
-        connection.write_response(Code::Ok, "Ok")?;
-
-        connection.read_opts()?;
+        connection.write_response(Code::NeedAccountForLogin, "Enter username.")?;
 
         Ok(connection)
     }
@@ -66,18 +77,6 @@ impl Connection {
         Ok(())
     }
 
-    pub fn read_opts(&mut self) -> io::Result<()> {
-        if !self.expect_command(b"OPTS ")? {
-            return Ok(());
-        }
-
-        let opts = self.read_arg()?;
-
-        println!("Found opts: {:?}", opts);
-
-        Ok(())
-    }
-
     fn read_arg(&mut self) -> io::Result<String> {
         let mut buffer = String::new();
         self.reader.read_line(&mut buffer)?;
@@ -86,57 +85,6 @@ impl Connection {
             s = stripped;
         }
         Ok(s.to_owned())
-    }
-
-    /// Returns true if command was found
-    fn expect_command(&mut self, command: &[u8]) -> io::Result<bool> {
-        let mut command_buf = vec![0; command.len()];
-
-        let len = self.reader.read(&mut command_buf)?;
-
-        if len > 0 && command_buf != command {
-            self.write_response(Code::BadSequenceOfCommands, "Bad sequence of commands.")?;
-            println!("Found {:?}.", command);
-            return Ok(false);
-        }
-        Ok(true)
-    }
-
-    pub fn login(&mut self) -> io::Result<()> {
-        self.write_response(Code::NeedAccountForLogin, "Enter username.")?;
-
-        if !self.expect_command(b"USER ")? {
-            return Ok(());
-        }
-
-        let username = self.read_arg()?;
-
-        if username.is_empty() {
-            self.write_response(
-                Code::InvalidParametersOrArguments,
-                "Username may not be empty.",
-            )?;
-            return Ok(());
-        }
-
-        println!("Found username: {:?}", username);
-
-        self.write_response(
-            Code::UserNameOkPasswordNeeded,
-            "Username Ok. Password needed.",
-        )?;
-
-        if !self.expect_command(b"PASS ")? {
-            return Ok(());
-        }
-
-        let password = self.read_arg()?;
-
-        println!("Found password: {:?}", password);
-
-        self.write_response(Code::UserLoggedIn, "Logged in.")?;
-
-        Ok(())
     }
 
     fn read_cmd(&mut self) -> io::Result<bool> {
@@ -161,8 +109,42 @@ impl Connection {
         println!("Arg: {:?}", arg);
 
         match command.as_str() {
-            "USER" => todo!(),
-            "PASS" => todo!(),
+            "USER" => {
+                if arg.is_empty() {
+                    self.write_response(
+                        Code::InvalidParametersOrArguments,
+                        "Username may not be empty.",
+                    )?;
+                    return Ok(true);
+                }
+
+                println!("Found username: {:?}", arg);
+
+                if !self.config.users.contains_key(&arg) {
+                    self.write_response(Code::NotLoggedIn, "User does not exist.")?;
+                    return Ok(true);
+                }
+
+                self.username = Some(arg);
+
+                self.write_response(
+                    Code::UserNameOkPasswordNeeded,
+                    "Username Ok. Password needed.",
+                )?;
+            }
+            "PASS" => {
+                println!("Found password: {:?}", arg);
+
+                if let Some(username) = &self.username {
+                    if self.config.users.get(username) == Some(&arg) {
+                        self.write_response(Code::UserLoggedIn, "Logged in.")?;
+                    } else {
+                        self.write_response(Code::NotLoggedIn, "Incorrect password.")?;
+                    }
+                } else {
+                    self.write_response(Code::BadSequenceOfCommands, "Expected `USER`.")?;
+                }
+            }
             "ACCT" => todo!(),
             "XCWD" | "CWD " => {
                 let path = self.path.join(arg);
@@ -239,7 +221,15 @@ impl Connection {
             "SYST" => todo!(),
             "STAT" => todo!(),
             "HELP" => todo!(),
-            "NOOP" => todo!(),
+            "NOOP" => self.write_response(Code::Ok, "NOOP")?,
+            "OPTS" => {
+                println!("Found opts: {:?}", arg);
+
+                match arg.to_ascii_lowercase().as_str() {
+                    "utf8 on" => self.write_response(Code::Ok, "Ok, UTF-8 enabled.")?,
+                    _ => self.write_response(Code::CommandNotImplemented, "Unknown option.")?,
+                }
+            }
             cmd => {
                 println!("Command not recognized: {:?}", cmd);
                 self.write_response(Code::CommandUnrecognized, "Command not recognized.")?;
@@ -273,8 +263,6 @@ fn main() -> io::Result<()> {
 
 fn handle_connection(stream: TcpStream) -> io::Result<()> {
     let mut connection = Connection::new(stream, PathBuf::from("/"))?;
-
-    connection.login()?;
 
     connection.command_loop()?;
 
