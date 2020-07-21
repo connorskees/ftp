@@ -8,7 +8,7 @@ use std::{
     thread,
 };
 
-use crate::data::DataType;
+use crate::data::{DataStructure, DataType, TransferMode};
 use crate::response::Code;
 
 mod command;
@@ -36,6 +36,8 @@ pub struct Connection {
     username: Option<String>,
     config: Config,
     data_type: DataType,
+    data_structure: DataStructure,
+    transfer_mode: TransferMode,
 }
 
 impl Connection {
@@ -48,6 +50,8 @@ impl Connection {
             username: None,
             config: Config::new(),
             data_type: DataType::default(),
+            data_structure: DataStructure::default(),
+            transfer_mode: TransferMode::default(),
         };
 
         connection.write_response(Code::ServiceReadyForNewUser, "Server ready for new user")?;
@@ -220,8 +224,59 @@ impl Connection {
                 self.data_type = data_type;
                 self.write_response(Code::Ok, &format!("Type is now {}.", data_type))?;
             }
-            "STRU" => todo!(),
-            "MODE" => todo!(),
+            "STRU" => {
+                let data_structure = match arg.chars().next() {
+                    Some('F') | Some('f') => DataStructure::Files,
+                    Some('R') | Some('r') => DataStructure::Record,
+                    Some('P') | Some('p') => DataStructure::Page,
+                    Some(c) => {
+                        self.write_response(
+                            Code::CommandNotImplementedForThatParameter,
+                            &format!("Unknown STRUcture: {}.", c),
+                        )?;
+                        return Ok(true);
+                    }
+                    None => {
+                        self.write_response(
+                            Code::InvalidParametersOrArguments,
+                            "Missing argument.",
+                        )?;
+                        return Ok(true);
+                    }
+                };
+
+                self.data_structure = data_structure;
+
+                self.write_response(Code::Ok, &format!("Structure is now {}.", data_structure))?;
+            }
+            "MODE" => {
+                let transfer_mode = match arg.chars().next() {
+                    Some('S') | Some('s') => TransferMode::Stream,
+                    Some('B') | Some('b') => TransferMode::Block,
+                    Some('C') | Some('c') => TransferMode::Compressed,
+                    Some(c) => {
+                        self.write_response(
+                            Code::CommandNotImplementedForThatParameter,
+                            &format!("Unknown transfer mode: {}.", c),
+                        )?;
+                        return Ok(true);
+                    }
+                    None => {
+                        self.write_response(
+                            Code::InvalidParametersOrArguments,
+                            "Missing argument.",
+                        )?;
+                        return Ok(true);
+                    }
+                };
+
+                self.transfer_mode = transfer_mode;
+
+                self.write_response(
+                    Code::Ok,
+                    &format!("Transfer mode is now {}.", transfer_mode),
+                )?;
+            }
             "RETR" => todo!(),
             "STOR" => todo!(),
             "STOU" => todo!(),

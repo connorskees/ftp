@@ -156,13 +156,14 @@ impl Default for DataType {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
 pub enum DataStructure {
     /// File structure is the default to be assumed if the STRUcture
     /// command has not been used.
     ///
     /// In file-structure there is no internal structure and the
     /// file is considered to be a continuous sequence of data
-    File(Vec<u8>),
+    Files,
 
     // Record structures must be accepted for "text" files (i.e.,
     // files with TYPE ASCII or EBCDIC) by all FTP implementations.
@@ -178,21 +179,23 @@ pub enum DataStructure {
     /// the file as a whole (e.g., a file descriptor), or with a
     /// section of the file (e.g., page access controls), or both.
     /// In FTP, the sections of the file are called pages.
-    Page {
-        /// The number of logical bytes in the page header
-        /// including this byte.  The minimum header length is 4.
-        header_length: usize,
+    Page,
+}
 
-        /// The logical page number of this section of the file.
-        /// This is not the transmission sequence number of this
-        /// page, but the index used to identify this page of the
-        /// file.
-        page_index: usize,
+impl Default for DataStructure {
+    fn default() -> Self {
+        DataStructure::Files
+    }
+}
 
-        /// The number of logical bytes in the page data.  The
-        /// minimum data length is 0.
-        data_length: usize,
-    },
+impl fmt::Display for DataStructure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            DataStructure::Files => "file",
+            DataStructure::Record => "record",
+            DataStructure::Page => "page",
+        })
+    }
 }
 
 #[repr(u8)]
@@ -219,3 +222,26 @@ pub enum PageType {
 
 /// Number of bits long a byte is (for now we assume every byte is 8 bits)
 pub struct LogicalByteLength(u8);
+
+#[derive(Debug, Copy, Clone)]
+pub enum TransferMode {
+    Stream,
+    Block,
+    Compressed,
+}
+
+impl Default for TransferMode {
+    fn default() -> Self {
+        TransferMode::Stream
+    }
+}
+
+impl fmt::Display for TransferMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            TransferMode::Stream => "stream",
+            TransferMode::Block => "block",
+            TransferMode::Compressed => "compressed",
+        })
+    }
+}
