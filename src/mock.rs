@@ -20,7 +20,7 @@ pub struct MockFtpServer {
     writer: TcpStream,
 }
 
-pub(crate) fn test_users() -> BTreeMap<String, String> {
+pub fn test_users() -> BTreeMap<String, String> {
     let mut users = BTreeMap::new();
     users.insert("a".to_owned(), "a".to_owned());
     users.insert("b".to_owned(), "b".to_owned());
