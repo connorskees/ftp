@@ -15,6 +15,7 @@ name = "server"
 path = "src/main.rs"
 
 [dependencies]
+log = "0.4.11"
 
 [dev-dependencies]
 lazy_static = "1.4.0"
