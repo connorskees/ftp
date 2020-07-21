@@ -2,17 +2,20 @@ use std::{
     collections::BTreeMap,
     fs,
     io::{self, BufRead, BufReader, BufWriter, Read, Write},
-    net::{Ipv4Addr, TcpListener, TcpStream},
+    net::{Ipv4Addr, TcpListener, TcpStream, ToSocketAddrs},
     path::PathBuf,
     str::FromStr,
+    sync::Arc,
     thread,
 };
 
 use crate::data::{DataStructure, DataType, TransferMode};
+use crate::mock::test_users;
 use crate::response::Code;
 
 mod command;
 mod data;
+pub mod mock;
 mod response;
 
 pub struct Config {
@@ -20,10 +23,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn new() -> Self {
-        let mut users = BTreeMap::new();
-        users.insert("a".to_owned(), "a".to_owned());
-        users.insert("b".to_owned(), "b".to_owned());
+    pub fn new(users: BTreeMap<String, String>) -> Self {
         Self { users }
     }
 }
@@ -34,21 +34,21 @@ pub struct Connection {
     path: PathBuf,
     data_port: Option<u16>,
     username: Option<String>,
-    config: Config,
+    config: Arc<Config>,
     data_type: DataType,
     data_structure: DataStructure,
     transfer_mode: TransferMode,
 }
 
 impl Connection {
-    pub fn new(stream: TcpStream, path: PathBuf) -> io::Result<Self> {
+    pub fn new(stream: TcpStream, path: PathBuf, config: Arc<Config>) -> io::Result<Self> {
         let mut connection = Self {
             reader: BufReader::new(stream.try_clone()?),
             writer: BufWriter::new(stream),
             path,
             data_port: None,
             username: None,
-            config: Config::new(),
+            config,
             data_type: DataType::default(),
             data_structure: DataStructure::default(),
             transfer_mode: TransferMode::default(),
@@ -340,22 +340,40 @@ impl Connection {
     }
 }
 
-fn main() -> io::Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:21").unwrap();
-
-    for stream in listener.incoming() {
-        let stream = stream?;
-
-        thread::spawn(|| handle_connection(stream));
-    }
-
-    Ok(())
+pub struct Server {
+    listener: TcpListener,
+    config: Arc<Config>,
 }
 
-fn handle_connection(stream: TcpStream) -> io::Result<()> {
-    let mut connection = Connection::new(stream, PathBuf::from("/"))?;
+impl Server {
+    pub fn new<A: ToSocketAddrs>(addr: A, config: Config) -> Self {
+        Server {
+            listener: TcpListener::bind(addr).unwrap(),
+            config: Arc::new(config),
+        }
+    }
 
-    connection.command_loop()?;
+    pub fn run(self) -> io::Result<()> {
+        for stream in self.listener.incoming() {
+            let stream = stream?;
 
-    Ok(())
+            let config = self.config.clone();
+
+            thread::spawn(|| Self::handle_connection(stream, config));
+        }
+
+        Ok(())
+    }
+
+    fn handle_connection(stream: TcpStream, config: Arc<Config>) -> io::Result<()> {
+        let mut connection = Connection::new(stream, PathBuf::from("/"), config)?;
+
+        connection.command_loop()?;
+
+        Ok(())
+    }
+}
+
+fn main() -> io::Result<()> {
+    Server::new("127.0.0.1:21", Config::new(test_users())).run()
 }
