@@ -1,12 +1,12 @@
 use std::{
     collections::BTreeMap,
-    io::{BufRead, BufReader, BufWriter, Read, Write},
-    net::{SocketAddr, TcpStream, ToSocketAddrs},
+    io::{BufRead, BufReader, Read, Write},
+    net::TcpStream,
     sync::atomic::{AtomicU16, Ordering},
     thread,
 };
 
-use crate::{Config, Server};
+use crate::{Config, Server, Users};
 
 const LOCALHOST: &str = "127.0.0.1";
 
@@ -20,7 +20,7 @@ pub struct MockFtpServer {
     writer: TcpStream,
 }
 
-pub fn test_users() -> BTreeMap<String, String> {
+pub fn test_users() -> Users {
     let mut users = BTreeMap::new();
     users.insert("a".to_owned(), "a".to_owned());
     users.insert("b".to_owned(), "b".to_owned());

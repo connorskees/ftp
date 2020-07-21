@@ -9,20 +9,21 @@ use std::{
     thread,
 };
 
+pub type Users = BTreeMap<String, String>;
+
 use crate::data::{DataStructure, DataType, TransferMode};
 use crate::response::Code;
 
-mod command;
 mod data;
 pub mod mock;
 mod response;
 
 pub struct Config {
-    users: BTreeMap<String, String>,
+    users: Users,
 }
 
 impl Config {
-    pub fn new(users: BTreeMap<String, String>) -> Self {
+    pub fn new(users: Users) -> Self {
         Self { users }
     }
 }

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::fmt;
 
 /// Data representations are handled in FTP by a user specifying a
