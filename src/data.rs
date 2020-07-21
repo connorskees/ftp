@@ -1,3 +1,5 @@
+use std::fmt;
+
 /// Data representations are handled in FTP by a user specifying a
 /// representation type.  This type may implicitly (as in ASCII or
 /// EBCDIC) or explicitly (as in Local byte) define a byte size for
@@ -9,6 +11,7 @@
 /// Local byte, then the TYPE command has an obligatory second
 /// parameter specifying the logical byte size.  The transfer byte
 /// size is always 8 bits.
+#[derive(Debug, Copy, Clone)]
 pub enum DataType {
     /// This is the default type and must be accepted by all FTP
     /// implementations.  It is intended primarily for the transfer
@@ -111,7 +114,46 @@ pub enum DataType {
     /// ASCII or EBCDIC format does not satisfy all these
     /// conditions.  Therefore, these types have a second parameter
     /// specifying one of the following three formats:
-    FormatControl,
+    FormatControl(FormatControl),
+}
+
+impl fmt::Display for DataType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DataType::Ascii => f.write_str("ASCII"),
+            DataType::Ebcdic => todo!("fmt ebcdic"),
+            DataType::Image | DataType::LocalType => f.write_str("8-bit binary"),
+            DataType::FormatControl(..) => todo!("fmt formatcontrol"),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum FormatControl {
+    /// This is the default format to be used if the second
+    /// (format) parameter is omitted.  Non-print format must be
+    /// accepted by all FTP implementations.
+    ///
+    /// The file need contain no vertical format information.  If
+    /// it is passed to a printer process, this process may
+    /// assume standard values for spacing and margins.
+    ///
+    /// Normally, this format will be used with files destined
+    /// for processing or just storage.
+    NonPrint,
+
+    /// The file contains ASCII/EBCDIC vertical format controls
+    /// (i.e., <CR>, <LF>, <NL>, <VT>, <FF>) which the printer
+    /// process will interpret appropriately.  <CRLF>, in exactly
+    /// this sequence, also denotes end-of-line.
+    Telnet,
+    Carriage,
+}
+
+impl Default for DataType {
+    fn default() -> Self {
+        Self::Ascii
+    }
 }
 
 pub enum DataStructure {

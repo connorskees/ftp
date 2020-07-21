@@ -8,6 +8,7 @@ use std::{
     thread,
 };
 
+use crate::data::DataType;
 use crate::response::Code;
 
 mod command;
@@ -34,6 +35,7 @@ pub struct Connection {
     data_port: Option<u16>,
     username: Option<String>,
     config: Config,
+    data_type: DataType,
 }
 
 impl Connection {
@@ -45,6 +47,7 @@ impl Connection {
             data_port: None,
             username: None,
             config: Config::new(),
+            data_type: DataType::default(),
         };
 
         connection.write_response(Code::ServiceReadyForNewUser, "Server ready for new user")?;
@@ -183,7 +186,41 @@ impl Connection {
                 self.write_response(Code::Ok, "Changed port.")?;
             }
             "PASV" => todo!(),
-            "TYPE" => todo!(),
+            "TYPE" => {
+                let data_type = match arg.chars().next() {
+                    Some('A') | Some('a') => DataType::Ascii,
+                    Some('E') | Some('e') => DataType::Ebcdic,
+                    Some('I') | Some('i') => DataType::Image,
+                    Some('L') => {
+                        let byte_size: u16 = arg[1..].trim().parse().unwrap();
+                        if byte_size != 8 {
+                            self.write_response(
+                                Code::CommandNotImplementedForThatParameter,
+                                "Only 8-bit bytes are supported.",
+                            )?;
+                            return Ok(true);
+                        }
+                        DataType::LocalType
+                    }
+                    Some(c) => {
+                        self.write_response(
+                            Code::CommandNotImplementedForThatParameter,
+                            &format!("Unknown TYPE: {}.", c),
+                        )?;
+                        return Ok(true);
+                    }
+                    None => {
+                        self.write_response(
+                            Code::InvalidParametersOrArguments,
+                            "Missing argument.",
+                        )?;
+                        return Ok(true);
+                    }
+                };
+
+                self.data_type = data_type;
+                self.write_response(Code::Ok, &format!("Type is now {}.", data_type))?;
+            }
             "STRU" => todo!(),
             "MODE" => todo!(),
             "RETR" => todo!(),
