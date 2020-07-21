@@ -1,10 +1,17 @@
-use lazy_static::lazy_static;
-
 use ftp::mock::MockFtpServer;
 
-lazy_static! {
-    static ref PWD_SERVER: MockFtpServer = MockFtpServer::new();
+#[test]
+fn simple_pwd() {
+    let mut server = MockFtpServer::new();
+    server.send_bytes(b"PWD\r\n");
+    server.assert_output(b"200 .\r\n");
+    server.quit();
 }
 
 #[test]
-fn it_works() {}
+fn ignores_args() {
+    let mut server = MockFtpServer::new();
+    server.send_bytes(b"PWD abc123\r\n");
+    server.assert_output(b"200 .\r\n");
+    server.quit();
+}

@@ -11,6 +11,8 @@ use std::{
 
 pub type Users = BTreeMap<String, String>;
 
+use log::debug;
+
 use crate::data::{DataStructure, DataType, TransferMode};
 use crate::response::Code;
 
@@ -54,7 +56,7 @@ impl Connection {
             transfer_mode: TransferMode::default(),
         };
 
-        connection.write_response(Code::ServiceReadyForNewUser, "Server ready for new user")?;
+        connection.write_response(Code::ServiceReadyForNewUser, "Server ready for new user.")?;
 
         connection.write_response(Code::NeedAccountForLogin, "Enter username.")?;
 
@@ -112,8 +114,8 @@ impl Connection {
 
         let arg = self.read_arg()?;
 
-        println!("Command: {:?}", command);
-        println!("Arg: {:?}", arg);
+        debug!("Command: {:?}", command);
+        debug!("Arg: {:?}", arg);
 
         match command.as_str() {
             "USER" => {
@@ -125,7 +127,7 @@ impl Connection {
                     return Ok(true);
                 }
 
-                println!("Found username: {:?}", arg);
+                debug!("Found username: {:?}", arg);
 
                 if !self.config.users.contains_key(&arg) {
                     self.write_response(Code::NotLoggedIn, "User does not exist.")?;
@@ -140,7 +142,7 @@ impl Connection {
                 )?;
             }
             "PASS" => {
-                println!("Found password: {:?}", arg);
+                debug!("Found password: {:?}", arg);
 
                 if let Some(username) = &self.username {
                     if self.config.users.get(username) == Some(&arg) {
@@ -314,7 +316,7 @@ impl Connection {
             "HELP" => todo!(),
             "NOOP" => self.write_response(Code::Ok, "NOOP")?,
             "OPTS" => {
-                println!("Found opts: {:?}", arg);
+                debug!("Found opts: {:?}", arg);
 
                 match arg.to_ascii_lowercase().as_str() {
                     "utf8 on" => self.write_response(Code::Ok, "Ok, UTF-8 enabled.")?,
@@ -322,7 +324,7 @@ impl Connection {
                 }
             }
             cmd => {
-                println!("Command not recognized: {:?}", cmd);
+                debug!("Command not recognized: {:?}", cmd);
                 self.write_response(Code::CommandUnrecognized, "Command not recognized.")?;
             }
         }
@@ -343,13 +345,15 @@ impl Connection {
 pub struct Server {
     listener: TcpListener,
     config: Arc<Config>,
+    root_path: PathBuf,
 }
 
 impl Server {
-    pub fn new<A: ToSocketAddrs>(addr: A, config: Config) -> Self {
+    pub fn new<A: ToSocketAddrs>(addr: A, config: Config, root_path: PathBuf) -> Self {
         Server {
             listener: TcpListener::bind(addr).unwrap(),
             config: Arc::new(config),
+            root_path,
         }
     }
 
@@ -358,15 +362,20 @@ impl Server {
             let stream = stream?;
 
             let config = self.config.clone();
+            let root_path = self.root_path.clone();
 
-            thread::spawn(|| Self::handle_connection(stream, config));
+            thread::spawn(move || Self::handle_connection(stream, config, root_path));
         }
 
         Ok(())
     }
 
-    fn handle_connection(stream: TcpStream, config: Arc<Config>) -> io::Result<()> {
-        let mut connection = Connection::new(stream, PathBuf::from("/"), config)?;
+    fn handle_connection(
+        stream: TcpStream,
+        config: Arc<Config>,
+        root_path: PathBuf,
+    ) -> io::Result<()> {
+        let mut connection = Connection::new(stream, root_path, config)?;
 
         connection.command_loop()?;
 
