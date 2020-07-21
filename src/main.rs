@@ -192,8 +192,7 @@ impl Connection {
                     Some('E') | Some('e') => DataType::Ebcdic,
                     Some('I') | Some('i') => DataType::Image,
                     Some('L') => {
-                        let byte_size: u16 = arg[1..].trim().parse().unwrap();
-                        if byte_size != 8 {
+                        if arg[1..].trim() != "8" {
                             self.write_response(
                                 Code::CommandNotImplementedForThatParameter,
                                 "Only 8-bit bytes are supported.",
