@@ -71,7 +71,7 @@ impl MockFtpServer {
 
         self.reader.read_exact(&mut output_buf).unwrap();
 
-        assert_eq!(output, output_buf)
+        assert_eq!(output, output_buf.as_slice())
     }
 
     pub fn quit(mut self) {

@@ -89,11 +89,7 @@ impl Connection {
     fn read_arg(&mut self) -> io::Result<String> {
         let mut buffer = String::new();
         self.reader.read_line(&mut buffer)?;
-        let mut s = buffer.trim_end_matches("\r\n");
-        if let Some(stripped) = s.strip_prefix(' ') {
-            s = stripped;
-        }
-        Ok(s.to_owned())
+        Ok(buffer.trim().to_owned())
     }
 
     fn read_cmd(&mut self) -> io::Result<bool> {
@@ -289,8 +285,40 @@ impl Connection {
             "RNTO" => todo!(),
             "ABOR" => todo!(),
             "DELE" => todo!(),
-            "XRMD" => todo!(),
-            "XMKD" => todo!(),
+            "XRMD" | "RMD " | "RMD\r" => {
+                let path = self.path.join(arg);
+
+                if !path.exists() {
+                    self.write_response(
+                        Code::FileUnavailable,
+                        &format!("Error removing {:?}: No such file or directory.", path),
+                    )?;
+                    return Ok(true);
+                }
+
+                match fs::remove_dir(&path) {
+                    Ok(()) => self.write_response(
+                        Code::RequestedFileActionComplete,
+                        &format!("Successfully deleted {:?}.", path),
+                    )?,
+                    Err(e) => self.write_response(
+                        Code::ActionNotTaken,
+                        &format!("Error deleting {:?}: {}.", path, e),
+                    )?,
+                };
+            }
+            "XMKD" | "MKD " | "MKD\r" => {
+                let path = self.path.join(arg);
+
+                if !path.exists() {
+                    fs::create_dir(&path)?;
+                }
+
+                self.write_response(
+                    Code::PathNameCreated,
+                    &format!("Successfully created {:?}.", path),
+                )?;
+            }
             "XPWD" | "PWD\r" | "PWD " => {
                 let path: String = self.path.to_string_lossy().into();
                 self.write_response(Code::Ok, &path)?
