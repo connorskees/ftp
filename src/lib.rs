@@ -14,7 +14,7 @@ pub type Users = BTreeMap<String, String>;
 use log::debug;
 
 use crate::data::{DataStructure, DataType, TransferMode};
-use crate::response::Code;
+pub use crate::response::Code;
 
 mod data;
 pub mod mock;
@@ -56,6 +56,8 @@ impl Connection {
             transfer_mode: TransferMode::default(),
         };
 
+        debug!("Beginning new connection.");
+
         connection.write_response(Code::ServiceReadyForNewUser, "Server ready for new user.")?;
 
         connection.write_response(Code::NeedAccountForLogin, "Enter username.")?;
@@ -64,6 +66,8 @@ impl Connection {
     }
 
     pub fn write_response(&mut self, code: Code, message: &str) -> io::Result<()> {
+        debug!("Writing response: {:?} {:?}", code, message);
+
         if message.contains('\n') {
             write!(self.writer, "{}-", code)?;
 
@@ -108,9 +112,10 @@ impl Connection {
             }
         };
 
+        debug!("Command: {:?}", command);
+
         let arg = self.read_arg()?;
 
-        debug!("Command: {:?}", command);
         debug!("Arg: {:?}", arg);
 
         match command.as_str() {

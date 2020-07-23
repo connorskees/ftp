@@ -14,8 +14,13 @@ path = "src/lib.rs"
 name = "server"
 path = "src/main.rs"
 
+[[bin]]
+name = "client"
+path = "src/client.rs"
+
 [dependencies]
 log = "0.4.11"
+env_logger = { version = "0.7.1", default-features = false }
 
 [dev-dependencies]
 lazy_static = "1.4.0"
