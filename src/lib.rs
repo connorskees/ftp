@@ -1,8 +1,8 @@
 use std::{
     collections::BTreeMap,
     fs,
-    io::{self, BufRead, BufReader, BufWriter, Read, Write},
-    net::{Ipv4Addr, TcpListener, TcpStream, ToSocketAddrs},
+    io::{self, BufRead, BufReader, Read, Write},
+    net::{Ipv4Addr, Shutdown, TcpListener, TcpStream, ToSocketAddrs},
     path::PathBuf,
     str::FromStr,
     sync::Arc,
@@ -32,28 +32,28 @@ impl Config {
 
 pub struct Connection {
     reader: BufReader<TcpStream>,
-    writer: BufWriter<TcpStream>,
+    writer: TcpStream,
     path: PathBuf,
-    data_port: Option<u16>,
     username: Option<String>,
     config: Arc<Config>,
     data_type: DataType,
     data_structure: DataStructure,
     transfer_mode: TransferMode,
+    data_connection: Option<TcpStream>,
 }
 
 impl Connection {
     pub fn new(stream: TcpStream, path: PathBuf, config: Arc<Config>) -> io::Result<Self> {
         let mut connection = Self {
             reader: BufReader::new(stream.try_clone()?),
-            writer: BufWriter::new(stream),
+            writer: stream,
             path,
-            data_port: None,
             username: None,
             config,
             data_type: DataType::default(),
             data_structure: DataStructure::default(),
             transfer_mode: TransferMode::default(),
+            data_connection: None,
         };
 
         debug!("Beginning new connection.");
@@ -86,7 +86,28 @@ impl Connection {
         } else {
             write!(self.writer, "{} {}\r\n", code, message)?;
         }
-        self.writer.flush()?;
+
+        Ok(())
+    }
+
+    pub fn write_to_data_connection(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.write_response(Code::FileStatusOk, "Connecting to data port.")?;
+        if let Some(connection) = self.data_connection.take().as_mut() {
+            connection.write_all(bytes)?;
+
+            if !bytes.ends_with(b"\r\n") {
+                connection.write_all(b"\r\n")?;
+            }
+
+            connection.flush()?;
+            connection.shutdown(Shutdown::Both)?;
+        } else {
+            self.write_response(Code::CannotOpenDataConnection, "No data connection")?;
+            return Ok(());
+        }
+
+        self.write_response(Code::ClosingDataConnection, "Closing connection")?;
+
         Ok(())
     }
 
@@ -177,10 +198,11 @@ impl Connection {
             "REIN" => todo!(),
             "PORT" => {
                 let mut vals: Vec<&str> = arg.split(',').collect();
+
                 let port = vals.pop().unwrap().parse::<u16>().unwrap()
                     + (vals.pop().unwrap().parse::<u16>().unwrap() << 8);
-                self.data_port = Some(port);
-                let _ip = match Ipv4Addr::from_str(&vals.join(".")) {
+
+                let ip = match Ipv4Addr::from_str(&vals.join(".")) {
                     Ok(addr) => addr,
                     Err(..) => {
                         self.write_response(
@@ -190,96 +212,17 @@ impl Connection {
                         return Ok(true);
                     }
                 };
+
+                debug!("Opening data port on {}:{}", ip, port);
+
+                self.data_connection = Some(TcpStream::connect((ip, port))?);
+
                 self.write_response(Code::Ok, "Changed port.")?;
             }
             "PASV" => todo!(),
-            "TYPE" => {
-                let data_type = match arg.chars().next() {
-                    Some('A') | Some('a') => DataType::Ascii,
-                    Some('E') | Some('e') => DataType::Ebcdic,
-                    Some('I') | Some('i') => DataType::Image,
-                    Some('L') => {
-                        if arg[1..].trim() != "8" {
-                            self.write_response(
-                                Code::CommandNotImplementedForThatParameter,
-                                "Only 8-bit bytes are supported.",
-                            )?;
-                            return Ok(true);
-                        }
-                        DataType::LocalType
-                    }
-                    Some(c) => {
-                        self.write_response(
-                            Code::CommandNotImplementedForThatParameter,
-                            &format!("Unknown TYPE: {}.", c),
-                        )?;
-                        return Ok(true);
-                    }
-                    None => {
-                        self.write_response(
-                            Code::InvalidParametersOrArguments,
-                            "Missing argument.",
-                        )?;
-                        return Ok(true);
-                    }
-                };
-
-                self.data_type = data_type;
-                self.write_response(Code::Ok, &format!("Type is now {}.", data_type))?;
-            }
-            "STRU" => {
-                let data_structure = match arg.chars().next() {
-                    Some('F') | Some('f') => DataStructure::Files,
-                    Some('R') | Some('r') => DataStructure::Record,
-                    Some('P') | Some('p') => DataStructure::Page,
-                    Some(c) => {
-                        self.write_response(
-                            Code::CommandNotImplementedForThatParameter,
-                            &format!("Unknown STRUcture: {}.", c),
-                        )?;
-                        return Ok(true);
-                    }
-                    None => {
-                        self.write_response(
-                            Code::InvalidParametersOrArguments,
-                            "Missing argument.",
-                        )?;
-                        return Ok(true);
-                    }
-                };
-
-                self.data_structure = data_structure;
-
-                self.write_response(Code::Ok, &format!("Structure is now {}.", data_structure))?;
-            }
-            "MODE" => {
-                let transfer_mode = match arg.chars().next() {
-                    Some('S') | Some('s') => TransferMode::Stream,
-                    Some('B') | Some('b') => TransferMode::Block,
-                    Some('C') | Some('c') => TransferMode::Compressed,
-                    Some(c) => {
-                        self.write_response(
-                            Code::CommandNotImplementedForThatParameter,
-                            &format!("Unknown transfer mode: {}.", c),
-                        )?;
-                        return Ok(true);
-                    }
-                    None => {
-                        self.write_response(
-                            Code::InvalidParametersOrArguments,
-                            "Missing argument.",
-                        )?;
-                        return Ok(true);
-                    }
-                };
-
-                self.transfer_mode = transfer_mode;
-
-                self.write_response(
-                    Code::Ok,
-                    &format!("Transfer mode is now {}.", transfer_mode),
-                )?;
-            }
+            "TYPE" => self.type_cmd(arg)?,
+            "STRU" => self.stru(arg)?,
+            "MODE" => self.mode(arg)?,
             "RETR" => todo!(),
             "STOR" => todo!(),
             "STOU" => todo!(),
@@ -290,28 +233,7 @@ impl Connection {
             "RNTO" => todo!(),
             "ABOR" => todo!(),
             "DELE" => todo!(),
-            "XRMD" | "RMD " | "RMD\r" => {
-                let path = self.path.join(arg);
-
-                if !path.exists() {
-                    self.write_response(
-                        Code::FileUnavailable,
-                        &format!("Error removing {:?}: No such file or directory.", path),
-                    )?;
-                    return Ok(true);
-                }
-
-                match fs::remove_dir(&path) {
-                    Ok(()) => self.write_response(
-                        Code::RequestedFileActionComplete,
-                        &format!("Successfully deleted {:?}.", path),
-                    )?,
-                    Err(e) => self.write_response(
-                        Code::ActionNotTaken,
-                        &format!("Error deleting {:?}: {}.", path, e),
-                    )?,
-                };
-            }
+            "XRMD" | "RMD " | "RMD\r" => self.rmd(arg)?,
             "XMKD" | "MKD " | "MKD\r" => {
                 let path = self.path.join(arg);
 
@@ -340,22 +262,16 @@ impl Connection {
                             .to_owned())
                     })
                     .collect::<io::Result<Vec<String>>>()?
-                    .join("\n");
-                self.write_response(Code::Ok, &dirs)?;
+                    .join("\r\n");
+
+                self.write_to_data_connection(dirs.as_bytes())?;
             }
             "SITE" => todo!(),
             "SYST" => todo!(),
             "STAT" => todo!(),
             "HELP" => todo!(),
             "NOOP" => self.write_response(Code::Ok, "NOOP")?,
-            "OPTS" => {
-                debug!("Found opts: {:?}", arg);
-
-                match arg.to_ascii_lowercase().as_str() {
-                    "utf8 on" => self.write_response(Code::Ok, "Ok, UTF-8 enabled.")?,
-                    _ => self.write_response(Code::CommandNotImplemented, "Unknown option.")?,
-                }
-            }
+            "OPTS" => self.opts(arg)?,
             cmd => {
                 debug!("Command not recognized: {:?}", cmd);
                 self.write_response(Code::CommandUnrecognized, "Command not recognized.")?;
@@ -363,6 +279,129 @@ impl Connection {
         }
 
         Ok(true)
+    }
+
+    fn opts(&mut self, arg: String) -> io::Result<()> {
+        debug!("Found opts: {:?}", arg);
+
+        match arg.to_ascii_lowercase().as_str() {
+            "utf8 on" => self.write_response(Code::Ok, "Ok, UTF-8 enabled.")?,
+            _ => self.write_response(Code::CommandNotImplemented, "Unknown option.")?,
+        }
+
+        Ok(())
+    }
+
+    fn rmd(&mut self, arg: String) -> io::Result<()> {
+        let path = self.path.join(arg);
+
+        if !path.exists() {
+            self.write_response(
+                Code::FileUnavailable,
+                &format!("Error removing {:?}: No such file or directory.", path),
+            )?;
+            return Ok(());
+        }
+
+        match fs::remove_dir(&path) {
+            Ok(()) => self.write_response(
+                Code::RequestedFileActionComplete,
+                &format!("Successfully deleted {:?}.", path),
+            )?,
+            Err(e) => self.write_response(
+                Code::ActionNotTaken,
+                &format!("Error deleting {:?}: {}.", path, e),
+            )?,
+        };
+
+        Ok(())
+    }
+
+    fn mode(&mut self, arg: String) -> io::Result<()> {
+        let transfer_mode = match arg.chars().next() {
+            Some('S') | Some('s') => TransferMode::Stream,
+            Some('B') | Some('b') => TransferMode::Block,
+            Some('C') | Some('c') => TransferMode::Compressed,
+            Some(c) => {
+                self.write_response(
+                    Code::CommandNotImplementedForThatParameter,
+                    &format!("Unknown transfer mode: {}.", c),
+                )?;
+                return Ok(());
+            }
+            None => {
+                self.write_response(Code::InvalidParametersOrArguments, "Missing argument.")?;
+                return Ok(());
+            }
+        };
+
+        self.transfer_mode = transfer_mode;
+
+        self.write_response(
+            Code::Ok,
+            &format!("Transfer mode is now {}.", transfer_mode),
+        )?;
+
+        Ok(())
+    }
+
+    fn stru(&mut self, arg: String) -> io::Result<()> {
+        let data_structure = match arg.chars().next() {
+            Some('F') | Some('f') => DataStructure::Files,
+            Some('R') | Some('r') => DataStructure::Record,
+            Some('P') | Some('p') => DataStructure::Page,
+            Some(c) => {
+                self.write_response(
+                    Code::CommandNotImplementedForThatParameter,
+                    &format!("Unknown STRUcture: {}.", c),
+                )?;
+                return Ok(());
+            }
+            None => {
+                self.write_response(Code::InvalidParametersOrArguments, "Missing argument.")?;
+                return Ok(());
+            }
+        };
+
+        self.data_structure = data_structure;
+
+        self.write_response(Code::Ok, &format!("Structure is now {}.", data_structure))?;
+
+        Ok(())
+    }
+
+    fn type_cmd(&mut self, arg: String) -> io::Result<()> {
+        let data_type = match arg.chars().next() {
+            Some('A') | Some('a') => DataType::Ascii,
+            Some('E') | Some('e') => DataType::Ebcdic,
+            Some('I') | Some('i') => DataType::Image,
+            Some('L') => {
+                if arg[1..].trim() != "8" {
+                    self.write_response(
+                        Code::CommandNotImplementedForThatParameter,
+                        "Only 8-bit bytes are supported.",
+                    )?;
+                    return Ok(());
+                }
+                DataType::LocalType
+            }
+            Some(c) => {
+                self.write_response(
+                    Code::CommandNotImplementedForThatParameter,
+                    &format!("Unknown TYPE: {}.", c),
+                )?;
+                return Ok(());
+            }
+            None => {
+                self.write_response(Code::InvalidParametersOrArguments, "Missing argument.")?;
+                return Ok(());
+            }
+        };
+
+        self.data_type = data_type;
+        self.write_response(Code::Ok, &format!("Type is now {}.", data_type))?;
+
+        Ok(())
     }
 
     pub fn command_loop(&mut self) -> io::Result<()> {
