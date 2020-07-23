@@ -117,10 +117,16 @@ impl Connection {
         Ok(buffer.trim().to_owned())
     }
 
+    fn unrecognized_command(&mut self, cmd: &str) -> io::Result<()> {
+        debug!("Command not recognized: {:?}", cmd);
+        self.write_response(Code::CommandUnrecognized, "Command not recognized.")?;
+        Ok(())
+    }
+
     fn read_cmd(&mut self) -> io::Result<bool> {
         let mut command = vec![0; 4];
 
-        self.reader.read_exact(&mut command)?;
+        let cmd_len = self.reader.read(&mut command)?;
 
         let command = match String::from_utf8(command) {
             Ok(mut cmd) => {
@@ -134,6 +140,11 @@ impl Connection {
         };
 
         debug!("Command: {:?}", command);
+
+        if cmd_len < 4 || command.trim().len() < 3 {
+            self.unrecognized_command(&command)?;
+            return Ok(true);
+        }
 
         let arg = self.read_arg()?;
 
@@ -272,10 +283,7 @@ impl Connection {
             "HELP" => todo!(),
             "NOOP" => self.write_response(Code::Ok, "NOOP")?,
             "OPTS" => self.opts(arg)?,
-            cmd => {
-                debug!("Command not recognized: {:?}", cmd);
-                self.write_response(Code::CommandUnrecognized, "Command not recognized.")?;
-            }
+            cmd => self.unrecognized_command(cmd)?,
         }
 
         Ok(true)
