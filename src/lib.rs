@@ -60,13 +60,14 @@ impl Connection {
 
         connection.write_response(Code::ServiceReadyForNewUser, "Server ready for new user.")?;
 
-        connection.write_response(Code::NeedAccountForLogin, "Enter username.")?;
-
         Ok(connection)
     }
 
     pub fn write_response(&mut self, code: Code, message: &str) -> io::Result<()> {
-        debug!("Writing response: {:?} {:?}", code, message);
+        debug!(
+            "Writing response: {:?}({}) {:?}",
+            code, code as u16, message
+        );
 
         if message.contains('\n') {
             write!(self.writer, "{}-", code)?;

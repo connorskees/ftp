@@ -1,5 +1,5 @@
 use std::{
-    io::{self, stdin, stdout, BufRead, BufReader, Read, Stdout, Write},
+    io::{self, stdin, stdout, BufRead, BufReader, Read, Stdin, Stdout, Write},
     net::TcpStream,
 };
 
@@ -94,8 +94,39 @@ impl FtpConnection {
         self.stdout.flush()
     }
 
-    pub fn prompt_login(&mut self) -> io::Result<()> {
-        self.write_stdout(b"User (127.0.0.1:(none)): ")?;
+    pub fn prompt_login(&mut self, stdin: &mut BufReader<Stdin>) -> io::Result<()> {
+        loop {
+            self.write_stdout(b"User (127.0.0.1:(none)): ")?;
+
+            let mut username = String::new();
+            stdin.read_line(&mut username)?;
+
+            self.write(b"USER ")?;
+            self.write(username.trim().as_bytes())?;
+            self.write(b"\r\n")?;
+
+            self.read_cmd()?;
+
+            match Code::from_bytes(self.code) {
+                Some(Code::UserNameOkPasswordNeeded) => {}
+                _ => continue,
+            }
+
+            self.write_stdout(b"Password: ")?;
+
+            let mut password = String::new();
+            stdin.read_line(&mut password)?;
+            self.write(b"PASS ")?;
+            self.write(password.trim().as_bytes())?;
+            self.write(b"\r\n")?;
+
+            self.read_cmd()?;
+
+            match Code::from_bytes(self.code) {
+                Some(Code::UserLoggedIn) => break,
+                _ => continue,
+            }
+        }
 
         Ok(())
     }
@@ -113,28 +144,9 @@ fn main() -> io::Result<()> {
 
     connection.wait_until_code(Code::ServiceReadyForNewUser)?;
 
-    connection.prompt_login()?;
-
     let mut stdin = BufReader::new(stdin());
 
-    let mut username = String::new();
-    stdin.read_line(&mut username)?;
-
-    connection.write(b"USER ")?;
-    connection.write(username.trim().as_bytes())?;
-    connection.write(b"\r\n")?;
-
-    connection.wait_until_code(Code::UserNameOkPasswordNeeded)?;
-
-    connection.write_stdout(b"Password: ")?;
-
-    let mut password = String::new();
-    stdin.read_line(&mut password)?;
-    connection.write(b"PASS ")?;
-    connection.write(password.trim().as_bytes())?;
-    connection.write(b"\r\n")?;
-
-    connection.wait_until_code(Code::UserLoggedIn)?;
+    connection.prompt_login(&mut stdin)?;
 
     let mut line = String::new();
 
