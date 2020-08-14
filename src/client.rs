@@ -57,7 +57,7 @@ impl FtpConnection {
             let prefix = &self
                 .code
                 .iter()
-                .map(|b| std::char::from_u32(*b as u32).unwrap())
+                .map(|b| char::from(*b))
                 .chain(std::iter::once(' '))
                 .collect::<String>();
 
